@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cestas de Natal 2026 – Posto Os Mensageiros</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>body{background:#f1f5f4;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}.leaflet-container{font-family:inherit}</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+/* ===== Regras de negócio (puras, testáveis) ===== */
+const REF_DEFAULT='2026-12-24';
+const SETORES=['Ind. Mansões','Nova Cidade','Jardim Tiradentes','Jardim Florença','Parque Hayala','Chácara São Pedro','Colina Azul','Jardim Dom Bosco','Jardim Rosa do Sul','Parque das Nações','Alto da Boa Vista','Jardim Riviera','Outro'];
+const STATUS=['A confirmar','Confirmada','Cadastro novo','Mudou de endereço','Não frequenta','Saiu'];
+const PART=['Sim','Não','A confirmar'],SIMNAO=['Sim','Não'],PRIO=['Normal','Alta','Muito alta'];
+const CONF=['Não contatada','Confirmada','Sem resposta','Número errado'];
+const MOTIVOS=['Não estava em casa','Mudou de endereço','Endereço não encontrado','Recusou','Outro'];
+const NM='Nome do responsável',T='Telefone (WhatsApp, 11 dígitos)',LAT='Latitude',LON='Longitude',LINK='Link de localização informado',R26='Rota 2026',ORD='Ordem na rota',VOL='Voluntário / carro';
+const BASE=['ID','Status 2026','Frequenta o Posto','Participa em 2026','Prioridade','Confirmação WhatsApp','Observações',NM,T,'Setor','Rua','Quadra','Lote','Complemento / referência',LAT,LON,LINK,R26,ORD,VOL,'Entregue 2026','Motivo da não entrega','Entregue em','Baixa por','Rota 2025','Voluntário 2025','Entregue 2025','Motivo 2025','Atualizado em','Atualizado por'];
+const DEPC=[];for(let i=1;i<=9;i++)DEPC.push('Nome '+i,'Nascimento '+i,'Sexo '+i);
+const COLS=[...BASE,...DEPC];
+const ROTA_COLS=['Rota','Voluntário / carro','Telefone do voluntário'];
+const strip=s=>String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+function normSetor(s){const k=strip(s);if(!k)return '';
+ const R=[[/independencia|mansoes/,'Ind. Mansões'],[/tiradentes/,'Jardim Tiradentes'],[/haiala|hayala/,'Parque Hayala'],[/nova cidade/,'Nova Cidade'],[/florenca/,'Jardim Florença'],[/chacara/,'Chácara São Pedro'],[/colina/,'Colina Azul'],[/dom bosco/,'Jardim Dom Bosco'],[/rosa do sul/,'Jardim Rosa do Sul'],[/nacoes/,'Parque das Nações'],[/boa vista/,'Alto da Boa Vista'],[/riviera/,'Jardim Riviera']];
+ if(/^ind /.test(k))return 'Ind. Mansões';
+ for(const [r,v] of R)if(r.test(k))return v;return 'Outro';}
+const validDate=s=>/^\d{4}-\d{2}-\d{2}$/.test(s||'');
+function ageOn(b,ref){const[y,m,d]=b.split('-').map(Number),[ry,rm,rd]=ref.split('-').map(Number);let a=ry-y;if(rm<m||(rm===m&&rd<d))a--;return a;}
+const faixaOf=a=>a<=2?'0-2':a<=5?'3-5':a<=9?'6-9':a<=12?'10-12':a<=17?'13-17':'18+';
+function deps(f,ref){const o=[];for(let i=1;i<=9;i++){const nome=String(f['Nome '+i]||'').trim(),nasc=f['Nascimento '+i]||'',sexo=f['Sexo '+i]||'';if(!nome&&!nasc&&!sexo)continue;
+ const age=validDate(nasc)?ageOn(nasc,ref):null;o.push({i,nome,nasc,sexo,age:age!==null&&age>=0?age:null});}return o;}
+function stats(f,ref){const ds=deps(f,ref),kids=ds.filter(d=>d.age!==null&&d.age<=17);
+ const fx={'0-2':0,'3-5':0,'6-9':0,'10-12':0,'13-17':0};kids.forEach(d=>fx[faixaOf(d.age)]++);
+ return{criancas:kids.filter(d=>d.age<=12).length,jovens:kids.filter(d=>d.age>=13).length,F:kids.filter(d=>d.sexo==='F').map(d=>d.nome),M:kids.filter(d=>d.sexo==='M').map(d=>d.nome),fx,ds};}
+const isActive=f=>['Sim','A confirmar'].includes(f['Participa em 2026']);
+const phoneOk=f=>/^\d{11}$/.test(String(f[T]||''));
+const hasCoord=f=>f[LAT]!==''&&f[LON]!==''&&!isNaN(+f[LAT])&&!isNaN(+f[LON]);
+function alerts(f,ref,max,cnt){const ds=deps(f,ref),a=[];
+ if(!phoneOk(f))a.push('Telefone inválido');if(!hasCoord(f))a.push('Sem coordenadas');
+ if(ds.some(d=>d.age===null||!d.sexo))a.push('Falta nascimento/sexo');
+ if(ds.some(d=>d.age!==null&&d.age>17))a.push('Membro acima de 17');
+ if(f[R26]!==''&&(cnt[f[R26]]||0)>max)a.push('Rota acima do máximo');return a;}
+const routeCounts=fs=>{const c={};fs.forEach(f=>{if(f[R26]!=='')c[f[R26]]=(c[f[R26]]||0)+1});return c;};
+const routeStops=(fs,n)=>fs.filter(f=>f[R26]!==''&&+f[R26]===+n).sort((a,b)=>(+a[ORD]||999)-(+b[ORD]||999)||a.ID.localeCompare(b.ID));
+function renum(fs,n){if(n===''||n==null)return fs;const ids={};routeStops(fs,n).forEach((f,i)=>ids[f.ID]=i+1);return fs.map(f=>ids[f.ID]?{...f,[ORD]:ids[f.ID]}:f);}
+const routeColor=n=>n===''||n==null?'#6b7280':`hsl(${(n*137.508)%360} 72% 40%)`;
+function addr(f){const p=[],r=String(f.Rua||'').trim();
+ if(r)p.push(/^(rua|avenida|av\.?|alameda|travessa|rodovia|estrada|pra[cç]a|via)\b/i.test(r)?r:'Rua '+r);
+ if(String(f.Quadra||'').trim())p.push('Quadra '+String(f.Quadra).trim());if(String(f.Lote||'').trim())p.push('Lote '+String(f.Lote).trim());
+ let s=p.join(', ');if(f.Setor)s+=(s?' – ':'')+f.Setor;if(String(f['Complemento / referência']||'').trim())s+=` (${String(f['Complemento / referência']).trim()})`;return s||'Não informado';}
+const locLink=f=>String(f[LINK]||'').trim()||(hasCoord(f)?`https://maps.google.com/?q=${f[LAT]},${f[LON]}`:'Não informado');
+function buildMsg(n,stops,ref){const L=[`🚐 ROTA ${n}`];
+ stops.forEach((f,i)=>{const s=stats(f,ref),g=a=>a.length?` (${a.join(' / ')})`:'';
+  L.push(`📍 Família ${i+1}`,`Nome: ${f[NM]}`,`Localização: ${locLink(f)}`,`Endereço: ${addr(f)}`,`Nº de Crianças: ${s.criancas}`,`Nº de Jovens: ${s.jovens}`,`Nº de Meninas (F): ${s.F.length}${g(s.F)}`,`Nº de Meninos (M): ${s.M.length}${g(s.M)}`,`Telefone: ${f[T]||'Não informado'}`,'');});
+ return L.join('\n').trim();}
+const isUrl=t=>/^https?:\/\//i.test((t||'').trim());
+const isShort=t=>/maps\.app\.goo\.gl|goo\.gl\/maps/i.test(t||'');
+function parseLoc(t){t=(t||'').trim();if(!t)return null;try{t=decodeURIComponent(t)}catch(e){}
+ const rx=[/@(-?\d+\.\d+),(-?\d+\.\d+)/,/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/,/[?&](?:q|ll|query|destination|center)=\+?(-?\d+\.\d+),\s*\+?(-?\d+\.\d+)/i,/^\s*(-?\d{1,3}\.\d+)\s*[,;]?\s*(-?\d{1,3}\.\d+)\s*$/,/\/(?:search|place|dir)\/\+?(-?\d+\.\d{3,}),\+?(-?\d+\.\d{3,})/];
+ for(const r of rx){const m=t.match(r);if(m){const la=+m[1],lo=+m[2];if(Math.abs(la)<=90&&Math.abs(lo)<=180)return{lat:la,lon:lo};}}return null;}
+const digits=s=>String(s||'').replace(/\D/g,'');
+function blank(id){const o={};COLS.forEach(c=>o[c]='');return{...o,ID:id,'Status 2026':'Cadastro novo','Frequenta o Posto':'Sim','Participa em 2026':'Sim',Prioridade:'Normal','Confirmação WhatsApp':'Não contatada','Entregue 2026':'Não'};}
+const nextId=fs=>'F'+String(fs.reduce((m,f)=>Math.max(m,parseInt(String(f.ID).replace(/\D/g,''))||0),0)+1).padStart(3,'0');
+const isoOf=d=>{d=new Date(d.getTime()+12*36e5);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
+function normRow(o,unk){const f={};COLS.forEach(c=>{let v=o[c];if(v==null)v='';if(v instanceof Date)v=isoOf(v);f[c]=typeof v==='string'?v.trim():v;});
+ f.ID=String(f.ID);f[T]=digits(f[T]);for(let i=1;i<=9;i++){const n=f['Nascimento '+i];if(n&&!validDate(n)){const m=String(n).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);f['Nascimento '+i]=m?`${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`:'';}
+  f['Sexo '+i]=String(f['Sexo '+i]).toUpperCase().startsWith('F')?'F':String(f['Sexo '+i]).toUpperCase().startsWith('M')?'M':'';}
+ [LAT,LON].forEach(k=>{const n=parseFloat(String(f[k]).replace(',','.'));f[k]=isNaN(n)?'':n;});
+ [R26,ORD,'Rota 2025'].forEach(k=>{const n=parseInt(f[k]);f[k]=isNaN(n)?'':n;});
+ ['Quadra','Lote','Rua'].forEach(k=>f[k]=String(f[k]));
+ const s=normSetor(f.Setor);if(s==='Outro'&&f.Setor&&unk)unk.add(f.Setor);f.Setor=s;
+ f['Status 2026']=f['Status 2026']||'A confirmar';f['Participa em 2026']=f['Participa em 2026']||'A confirmar';f.Prioridade=f.Prioridade||'Normal';f['Confirmação WhatsApp']=f['Confirmação WhatsApp']||'Não contatada';
+ return f;}
+
+const entStatus=f=>f['Entregue 2026']==='Sim'?'entregue':(f['Entregue 2026']==='Não'&&f['Motivo da não entrega'])?'problema':'aberto';
+
+</script>
+<script type="text/babel">
+const {useState,useEffect,useMemo,useRef}=React;
+const LS=(k,d)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}};
+const LSset=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const maskTel=d=>{d=digits(d).slice(0,11);return d.length>7?`(${d.slice(0,2)}) ${d.slice(2,7)}-${d.slice(7)}`:d.length>2?`(${d.slice(0,2)}) ${d.slice(2)}`:d;};
+const fmtBR=s=>validDate(s)?s.split('-').reverse().join('/'):'';
+async function api(cfg,action,payload){
+  if(!cfg.url)throw new Error('URL do Apps Script não configurada');
+  if(action==='read'||action==='expand'||action==='rev'){
+    const q=new URLSearchParams({action,token:cfg.token||'',...(payload||{})});
+    const r=await fetch(cfg.url+(cfg.url.includes('?')?'&':'?')+q);return r.json();
+  }
+  const r=await fetch(cfg.url,{method:'POST',body:JSON.stringify({action,token:cfg.token||'',...payload})});return r.json();
+}
+const inp='w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500';
+const btn='px-3 py-1.5 rounded-md text-sm font-medium transition ';
+const bP=btn+'bg-emerald-700 text-white hover:bg-emerald-800',bS=btn+'bg-white border border-slate-300 hover:bg-slate-50',bD=btn+'bg-red-600 text-white hover:bg-red-700';
+const Fld=({l,children,c=''})=><label className={'block '+c}><span className="block text-xs font-medium text-slate-600 mb-0.5">{l}</span>{children}</label>;
+const Sel=({v,o,on,blankOpt})=><select className={inp} value={v} onChange={e=>on(e.target.value)}>{blankOpt&&<option value="">—</option>}{o.map(x=><option key={x}>{x}</option>)}</select>;
+const Badge=({children,tone='slate'})=>{const t={slate:'bg-slate-100 text-slate-700',red:'bg-red-100 text-red-700',amber:'bg-amber-100 text-amber-800',green:'bg-emerald-100 text-emerald-800'}[tone];return <span className={'inline-block text-[11px] px-1.5 py-0.5 rounded '+t}>{children}</span>};
+const aTone=a=>a==='Membro acima de 17'?'amber':'red';
+
+/* ---------- Modal de cadastro/edição ---------- */
+function FamModal({init,isNew,onSave,onClose,cfg,rd:ref}){
+  const [d,setD]=useState({...init});
+  const [ds,setDs]=useState(()=>{const o=[];for(let i=1;i<=9;i++){const n=init['Nome '+i],b=init['Nascimento '+i],s=init['Sexo '+i];if(n||b||s)o.push({nome:n,nasc:b,sexo:s})}return o});
+  const [loc,setLoc]=useState(init[LINK]||(init[LAT]!==''&&init[LON]!==''?`${init[LAT]}, ${init[LON]}`:''));
+  const [locMsg,setLocMsg]=useState('');
+  const s=(k,v)=>setD(x=>({...x,[k]:v}));
+  async function onLoc(t){
+    setLoc(t);const up={};if(isUrl(t))up[LINK]=t.trim();
+    const p=parseLoc(t);
+    if(p){setD(x=>({...x,...up,[LAT]:p.lat,[LON]:p.lon}));setLocMsg(`✓ Coordenadas extraídas: ${p.lat}, ${p.lon}`);return;}
+    setD(x=>({...x,...up}));
+    if(isShort(t)){
+      if(!cfg.url){setLocMsg('Link curto: o navegador não consegue expandi-lo. Cole as coordenadas ou configure o Apps Script.');return;}
+      setLocMsg('Expandindo link…');
+      try{const r=await api(cfg,'expand',{url:t.trim()});
+        if(r.lat!=null){setD(x=>({...x,[LAT]:r.lat,[LON]:r.lon}));setLocMsg(`✓ Link expandido: ${r.lat}, ${r.lon}`);}else setLocMsg('Não encontrei coordenadas no link.');
+      }catch(e){setLocMsg('Erro ao expandir: '+e.message)}
+    }else setLocMsg(t.trim()?'Formato não reconhecido (use link do Maps ou "-16.8267, -49.3074").':'');
+  }
+  const tel=digits(d[T]),telOk=tel.length===11;
+  const upDep=(i,k,v)=>setDs(a=>a.map((x,j)=>j===i?{...x,[k]:v}:x));
+  function save(){
+    if(!String(d[NM]).trim()){alert('Informe o nome do responsável.');return;}
+    const f={...d,[T]:tel};for(let i=1;i<=9;i++){const x=ds[i-1];f['Nome '+i]=x?x.nome.trim():'';f['Nascimento '+i]=x?x.nasc:'';f['Sexo '+i]=x?x.sexo:'';}
+    [LAT,LON].forEach(k=>{const n=parseFloat(String(f[k]).replace(',','.'));f[k]=isNaN(n)?'':n});
+    [R26,ORD].forEach(k=>{const n=parseInt(f[k]);f[k]=isNaN(n)?'':n});
+    onSave(f);
+  }
+  return <div className="fixed inset-0 z-[2000] bg-black/40 flex justify-end" onMouseDown={e=>e.target===e.currentTarget&&onClose()}>
+    <div className="bg-white w-full max-w-2xl h-full overflow-y-auto p-5 shadow-xl">
+      <div className="flex justify-between items-center mb-4"><h2 className="text-lg font-bold">{isNew?'Nova família':`Editar ${d.ID}`}</h2><button className={bS} onClick={onClose}>Fechar</button></div>
+      <h3 className="font-semibold text-sm text-emerald-800 mb-2">Responsável e contato</h3>
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        <Fld l="Nome do responsável *" c="col-span-2"><input className={inp} value={d[NM]} onChange={e=>s(NM,e.target.value)}/></Fld>
+        <Fld l="Telefone WhatsApp (11 dígitos)"><div className="flex gap-1"><input className={inp+(tel&&!telOk?' border-red-500':'')} value={maskTel(d[T])} onChange={e=>s(T,digits(e.target.value).slice(0,11))} placeholder="(62) 99999-9999"/>
+          <a className={btn+'bg-green-600 text-white whitespace-nowrap '+(telOk?'':'pointer-events-none opacity-40')} target="_blank" rel="noreferrer" href={`https://wa.me/55${tel}?text=${encodeURIComponent(`Olá, ${d[NM]}! Aqui é do Posto de Assistência Os Mensageiros. Podemos confirmar a entrega da cesta de Natal para sua família?`)}`}>Testar/Confirmar</a></div>
+          {tel&&!telOk&&<span className="text-xs text-red-600">Precisa ter 11 dígitos (DDD + 9 + número) — faltam {11-tel.length>0?11-tel.length:0}.</span>}</Fld>
+        <Fld l="Frequenta o Posto"><Sel v={d['Frequenta o Posto']} o={SIMNAO} on={v=>s('Frequenta o Posto',v)} blankOpt/></Fld>
+        <Fld l="Status 2026"><Sel v={d['Status 2026']} o={STATUS} on={v=>s('Status 2026',v)}/></Fld>
+        <Fld l="Participa em 2026"><Sel v={d['Participa em 2026']} o={PART} on={v=>s('Participa em 2026',v)}/></Fld>
+        <Fld l="Prioridade"><Sel v={d.Prioridade} o={PRIO} on={v=>s('Prioridade',v)}/></Fld>
+        <Fld l="Confirmação WhatsApp"><Sel v={d['Confirmação WhatsApp']} o={CONF} on={v=>s('Confirmação WhatsApp',v)}/></Fld>
+        <Fld l="Observações" c="col-span-2"><textarea rows={2} className={inp} value={d['Observações']} onChange={e=>s('Observações',e.target.value)}/></Fld>
+      </div>
+      <h3 className="font-semibold text-sm text-emerald-800 mb-2">Endereço e localização</h3>
+      <div className="grid grid-cols-6 gap-3 mb-4">
+        <Fld l="Setor" c="col-span-3"><Sel v={d.Setor} o={SETORES} on={v=>s('Setor',v)} blankOpt/></Fld>
+        <Fld l="Rua" c="col-span-3"><input className={inp} value={d.Rua} onChange={e=>s('Rua',e.target.value)}/></Fld>
+        <Fld l="Quadra" c="col-span-2"><input className={inp} value={d.Quadra} onChange={e=>s('Quadra',e.target.value)}/></Fld>
+        <Fld l="Lote" c="col-span-2"><input className={inp} value={d.Lote} onChange={e=>s('Lote',e.target.value)}/></Fld>
+        <Fld l="Complemento / referência" c="col-span-6"><input className={inp} value={d['Complemento / referência']} onChange={e=>s('Complemento / referência',e.target.value)}/></Fld>
+        <Fld l="📍 Localização: cole link do Google Maps (longo ou curto) ou coordenadas" c="col-span-6"><input className={inp} value={loc} onChange={e=>onLoc(e.target.value)} placeholder="https://maps.app.goo.gl/… ou -16.8267, -49.3074"/>
+          <span className={'text-xs '+(locMsg.startsWith('✓')?'text-emerald-700':'text-slate-500')}>{locMsg}</span></Fld>
+        <Fld l="Latitude" c="col-span-3"><input className={inp} value={d[LAT]} onChange={e=>s(LAT,e.target.value)}/></Fld>
+        <Fld l="Longitude" c="col-span-3"><input className={inp} value={d[LON]} onChange={e=>s(LON,e.target.value)}/></Fld>
+        {d[LAT]!==''&&d[LON]!==''&&<a className="col-span-6 text-xs text-blue-700 underline" target="_blank" rel="noreferrer" href={`https://www.openstreetmap.org/?mlat=${d[LAT]}&mlon=${d[LON]}#map=17/${d[LAT]}/${d[LON]}`}>Conferir pino no OpenStreetMap</a>}
+      </div>
+      <h3 className="font-semibold text-sm text-emerald-800 mb-2">Crianças e jovens ({ds.length}/9) — idade em {fmtBR(ref)}</h3>
+      <div className="space-y-2 mb-2">{ds.map((x,i)=>{const age=validDate(x.nasc)?ageOn(x.nasc,ref):null;return <div key={i} className="grid grid-cols-12 gap-2 items-end bg-slate-50 p-2 rounded">
+        <Fld l="Nome" c="col-span-4"><input className={inp} value={x.nome} onChange={e=>upDep(i,'nome',e.target.value)}/></Fld>
+        <Fld l="Nascimento" c="col-span-3"><input type="date" className={inp} value={x.nasc} onChange={e=>upDep(i,'nasc',e.target.value)}/></Fld>
+        <div className="col-span-2"><span className="block text-xs font-medium text-slate-600 mb-0.5">Sexo</span><div className="flex">{['M','F'].map(k=><button key={k} type="button" onClick={()=>upDep(i,'sexo',k)} className={'flex-1 py-1.5 text-sm border '+(x.sexo===k?(k==='F'?'bg-pink-600 text-white border-pink-600':'bg-blue-600 text-white border-blue-600'):'bg-white border-slate-300')+(k==='M'?' rounded-l-md':' rounded-r-md')}>{k}</button>)}</div></div>
+        <div className="col-span-2 text-xs pb-2">{age===null?<Badge tone="red">sem data</Badge>:age>17?<Badge tone="amber">{age} anos · sem kit</Badge>:<Badge tone="green">{age} anos · {faixaOf(age)}</Badge>}</div>
+        <button className="col-span-1 text-red-600 pb-2" title="Remover" onClick={()=>setDs(a=>a.filter((_,j)=>j!==i))}>✕</button></div>})}</div>
+      <button className={bS+' mb-4'} disabled={ds.length>=9} onClick={()=>setDs(a=>[...a,{nome:'',nasc:'',sexo:''}])}>+ Adicionar criança/jovem</button>
+      <h3 className="font-semibold text-sm text-emerald-800 mb-2">Rota e entrega 2026</h3>
+      <div className="grid grid-cols-4 gap-3 mb-4">
+        <Fld l="Rota 2026"><input type="number" className={inp} value={d[R26]} onChange={e=>s(R26,e.target.value)}/></Fld>
+        <Fld l="Ordem na rota"><input type="number" className={inp} value={d[ORD]} onChange={e=>s(ORD,e.target.value)}/></Fld>
+        <Fld l="Entregue 2026"><Sel v={d['Entregue 2026']} o={SIMNAO} on={v=>s('Entregue 2026',v)} blankOpt/></Fld>
+        <Fld l="Motivo da não entrega"><Sel v={d['Motivo da não entrega']} o={MOTIVOS} on={v=>s('Motivo da não entrega',v)} blankOpt/></Fld>
+      </div>
+      <div className="text-xs bg-slate-100 rounded p-2 mb-4 text-slate-600">Histórico 2025 (somente leitura): Rota {d['Rota 2025']||'—'} · Voluntário {d['Voluntário 2025']||'—'} · Entregue {d['Entregue 2025']||'—'} · Motivo {d['Motivo 2025']||'—'}</div>
+      <div className="flex gap-2 sticky bottom-0 bg-white py-2"><button className={bP} onClick={save}>Salvar família</button><button className={bS} onClick={onClose}>Cancelar</button></div>
+    </div></div>;
+}
+
+/* ---------- Dashboard ---------- */
+function Dashboard({fams,rd:ref,max,goFilter}){
+  const act=fams.filter(isActive),cnt=routeCounts(act);
+  const tot=useMemo(()=>{const t={'0-2':0,'3-5':0,'6-9':0,'10-12':0,'13-17':0,M:0,F:0};act.forEach(f=>{const s=stats(f,ref);Object.keys(s.fx).forEach(k=>t[k]+=s.fx[k]);t.M+=s.M.length;t.F+=s.F.length});return t},[fams,ref]);
+  const pend=[['tel','Sem telefone válido',act.filter(f=>!phoneOk(f)).length],['coord','Sem coordenadas',act.filter(f=>!hasCoord(f)).length],['nasc','Falta nascimento/sexo',act.filter(f=>deps(f,ref).some(d=>d.age===null||!d.sexo)).length],['semrota','Sem rota',act.filter(f=>f[R26]==='').length],['acima17','Membro acima de 17',act.filter(f=>deps(f,ref).some(d=>d.age>17)).length]];
+  const big=Object.entries(cnt).filter(([,n])=>n>max);
+  const Card=({l,v,c='text-emerald-800'})=><div className="bg-white rounded-lg shadow-sm border p-4"><div className="text-xs text-slate-500">{l}</div><div className={'text-3xl font-bold '+c}>{v}</div></div>;
+  return <div className="space-y-6">
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <Card l="Famílias ativas (Sim + A confirmar)" v={act.length}/><Card l="Confirmadas" v={act.filter(f=>f['Status 2026']==='Confirmada').length}/>
+      <Card l="A confirmar" v={act.filter(f=>f['Participa em 2026']==='A confirmar').length} c="text-amber-600"/><Card l="Cestas básicas necessárias" v={act.length}/></div>
+    <div><h3 className="font-semibold mb-2">Kits por faixa etária (em {fmtBR(ref)})</h3>
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">{['0-2','3-5','6-9','10-12','13-17'].map(k=><Card key={k} l={k+' anos'} v={tot[k]}/>)}</div>
+      <div className="grid grid-cols-3 gap-3 mt-3"><Card l="Total de kits" v={['0-2','3-5','6-9','10-12','13-17'].reduce((a,k)=>a+tot[k],0)}/><Card l="Meninos (M)" v={tot.M} c="text-blue-700"/><Card l="Meninas (F)" v={tot.F} c="text-pink-600"/></div>
+      <p className="text-xs text-slate-500 mt-1">Meninos + Meninas pode ser menor que o total de kits enquanto houver dependentes sem sexo informado.</p></div>
+    <div><h3 className="font-semibold mb-2">Central de pendências</h3><div className="flex flex-wrap gap-2">
+      {pend.map(([k,l,n])=><button key={k} onClick={()=>goFilter(k)} className={btn+(n?'bg-red-50 text-red-700 border border-red-200 hover:bg-red-100':'bg-emerald-50 text-emerald-700 border border-emerald-200')}>{l}: <b>{n}</b></button>)}
+      <button onClick={()=>goFilter('rotaGrande')} className={btn+(big.length?'bg-red-50 text-red-700 border border-red-200':'bg-emerald-50 text-emerald-700 border border-emerald-200')}>Rotas acima de {max}: <b>{big.length}</b></button></div>
+      {big.length>0&&<p className="text-xs text-red-600 mt-2">{big.map(([r,n])=>`Rota ${r}: ${n} famílias`).join(' · ')}</p>}</div>
+  </div>;
+}
+
+/* ---------- Cadastro ---------- */
+function Cadastro({fams,rd:ref,max,filtro,setFiltro,q,setQ,edit,fresh}){
+  const [soAt,setSoAt]=useState(true);
+  const cnt=routeCounts(fams);
+  const rows=useMemo(()=>{const t=strip(q),td=digits(q);
+    return fams.filter(f=>{
+      if(filtro||soAt){if(!isActive(f))return false}
+      if(filtro==='tel'&&phoneOk(f))return false;if(filtro==='coord'&&hasCoord(f))return false;
+      if(filtro==='nasc'&&!deps(f,ref).some(d=>d.age===null||!d.sexo))return false;if(filtro==='semrota'&&f[R26]!=='')return false;
+      if(filtro==='acima17'&&!deps(f,ref).some(d=>d.age>17))return false;if(filtro==='rotaGrande'&&!((cnt[f[R26]]||0)>max))return false;
+      if(!t)return true;return strip([f.ID,f[NM],f.Rua,f.Setor,f[T]].join(' ')).includes(t)||(td.length>2&&String(f[T]).includes(td));
+    }).sort((a,b)=>a.ID.localeCompare(b.ID));},[fams,q,filtro,soAt,ref]);
+  const FL={tel:'Sem telefone válido',coord:'Sem coordenadas',nasc:'Falta nascimento/sexo',semrota:'Sem rota',acima17:'Membro acima de 17',rotaGrande:'Rotas acima do máximo'};
+  return <div>
+    <div className="flex flex-wrap gap-2 items-center mb-3">
+      <input autoFocus className={inp+' max-w-md'} placeholder="🔎 Buscar por nome, ID, rua, setor ou telefone…" value={q} onChange={e=>setQ(e.target.value)}/>
+      <button className={bP} onClick={()=>edit(null)}>+ Nova família</button>
+      <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={soAt} onChange={e=>setSoAt(e.target.checked)}/> só ativas</label>
+      {filtro&&<button className={btn+'bg-amber-100 text-amber-900'} onClick={()=>setFiltro(null)}>Filtro: {FL[filtro]} ✕</button>}
+      <span className="text-sm text-slate-500">{rows.length} resultado(s)</span></div>
+    <div className="bg-white rounded-lg border overflow-x-auto"><table className="w-full text-sm">
+      <thead className="bg-slate-100 text-left text-xs text-slate-600"><tr>{['ID','Responsável','Setor / endereço','Telefone','Status','Rota','Cr./Jov.','Alertas'].map(h=><th key={h} className="px-3 py-2">{h}</th>)}</tr></thead>
+      <tbody>{rows.map(f=>{const s=stats(f,ref),al=alerts(f,ref,max,cnt);return <tr key={f.ID} onClick={()=>edit(f)} className={"border-t hover:bg-emerald-50 cursor-pointer"+(fresh[f.ID]?" bg-yellow-100":"")}>
+        <td className="px-3 py-2 font-mono text-xs">{f.ID}</td><td className="px-3 py-2 font-medium">{f[NM]}</td>
+        <td className="px-3 py-2 text-xs">{f.Setor}<br/><span className="text-slate-500">{[f.Rua,f.Quadra&&'Q '+f.Quadra,f.Lote&&'L '+f.Lote].filter(Boolean).join(', ')}</span></td>
+        <td className="px-3 py-2 text-xs">{f[T]?maskTel(f[T]):'—'}</td><td className="px-3 py-2 text-xs">{f['Status 2026']}</td>
+        <td className="px-3 py-2">{f[R26]!==''?<span className="text-white text-xs px-1.5 py-0.5 rounded" style={{background:routeColor(f[R26])}}>{f[R26]}{f[ORD]!==''?`·${f[ORD]}`:''}</span>:<span className="text-slate-400">—</span>}</td>
+        <td className="px-3 py-2 text-xs">{s.criancas} / {s.jovens}</td>
+        <td className="px-3 py-2 space-x-1">{al.map(a=><Badge key={a} tone={aTone(a)}>{a}</Badge>)}</td></tr>})}</tbody></table>
+      {!rows.length&&<div className="p-6 text-center text-slate-500">Nenhuma família encontrada.</div>}</div></div>;
+}
+
+/* ---------- Mapa ---------- */
+function MapTab({fams,rd:ref,max,upd,rotas}){
+  const [q,setQ]=useState(''),[fRota,setFRota]=useState('todas'),[fSetor,setFSetor]=useState(''),[build,setBuild]=useState(false),[rotaN,setRotaN]=useState('');
+  const mapEl=useRef(),map=useRef(),layer=useRef(),fitted=useRef(false),tog=useRef();
+  const act=useMemo(()=>fams.filter(isActive),[fams]);
+  const vis=useMemo(()=>{const t=strip(q);return act.filter(f=>(!fSetor||f.Setor===fSetor)&&(fRota==='todas'||(fRota==='sem'?f[R26]==='':+f[R26]===+fRota))&&(!t||strip([f.ID,f[NM],f.Rua,f.Setor].join(' ')).includes(t)))},[act,q,fRota,fSetor]);
+  const R=rotaN!==''?+rotaN:(fRota!=='todas'&&fRota!=='sem'?+fRota:'');
+  const stops=R!==''?routeStops(fams,R):[];
+  const sum=stops.reduce((a,f)=>{const s=stats(f,ref);a.c+=s.criancas;a.j+=s.jovens;return a},{c:0,j:0});
+  const nums=[...new Set([...fams.map(f=>f[R26]).filter(x=>x!==''),...rotas.map(r=>r.Rota)])].sort((a,b)=>a-b);
+  function toggle(f){
+    if(rotaN===''){alert('Digite o número da rota antes de montar.');return;}
+    const n=+rotaN,old=f[R26];
+    if(old!==''&&+old===n){upd(fs=>renum(fs.map(x=>x.ID===f.ID?{...x,[R26]:'',[ORD]:''}:x),n),stops.map(s=>s.ID));}
+    else upd(fs=>{let r=fs.map(x=>x.ID===f.ID?{...x,[R26]:n,[ORD]:9999}:x);r=renum(r,n);return old!==''?renum(r,+old):r},[f.ID,...stops.map(s=>s.ID),...(old!==''?routeStops(fams,old).map(s=>s.ID):[])]);
+  }
+  tog.current=f=>build?toggle(f):null;
+  useEffect(()=>{map.current=L.map(mapEl.current).setView([-16.75,-49.3],11);
+    const ruas=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Tiles © Esri'}).addTo(map.current);
+    const sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Tiles © Esri'});
+    L.control.layers({'Ruas':ruas,'Satélite':sat}).addTo(map.current);layer.current=L.layerGroup().addTo(map.current);
+    return()=>map.current.remove()},[]);
+  useEffect(()=>{const lg=layer.current;lg.clearLayers();const pts=[];
+    vis.filter(hasCoord).forEach(f=>{const inR=R!==''&&f[R26]!==''&&+f[R26]===R,c=routeColor(f[R26]),sz=inR?30:24;
+      const icon=L.divIcon({className:'',iconSize:[sz,sz],html:`<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${c};color:#fff;font:700 12px/${sz-4}px sans-serif;text-align:center;border:2px solid ${inR?'#111':'#fff'};box-shadow:0 1px 4px #0006">${f[ORD]!==''?f[ORD]:''}</div>`});
+      const m=L.marker([+f[LAT],+f[LON]],{icon}).addTo(lg);pts.push([+f[LAT],+f[LON]]);
+      m.on('click',()=>{if(build){tog.current(f);return}
+        const s=stats(f,ref),h25=f['Rota 2025']!==''||f['Entregue 2025']?(f['Entregue 2025']==='Sim'?'Entregue':'Não entregue'+(f['Motivo 2025']?' – '+f['Motivo 2025']:'')):'sem registro';
+        L.popup().setLatLng(m.getLatLng()).setContent(`<b>${esc(f.ID)} · ${esc(f[NM])}</b><br>${esc(addr(f))}<br>Crianças: ${s.criancas} · Jovens: ${s.jovens}<br>Status 2026: ${esc(f['Status 2026'])}<br>Rota 2026: ${f[R26]===''?'sem rota':esc(f[R26])}<br><i>2025: ${esc(h25)}${f['Rota 2025']!==''?' (rota '+esc(f['Rota 2025'])+')':''}</i>`).openOn(map.current);});});
+    if(stops.length>1){const ll=stops.filter(hasCoord).map(f=>[+f[LAT],+f[LON]]);L.polyline(ll,{color:routeColor(R),weight:4,opacity:.8,dashArray:'8 6'}).addTo(lg);}
+    if(!fitted.current&&pts.length){map.current.fitBounds(pts,{padding:[30,30]});fitted.current=true;}
+  },[vis,R,build,fams]);
+  const gm=`https://www.google.com/maps/dir/${stops.filter(hasCoord).map(f=>`${f[LAT]},${f[LON]}`).join('/')}/`;
+  return <div className="grid md:grid-cols-[360px_1fr] gap-3" style={{height:'calc(100vh - 150px)'}}>
+    <div className="flex flex-col min-h-0 bg-white border rounded-lg p-3 gap-2">
+      <div className="grid grid-cols-2 gap-2"><input className={inp+' col-span-2'} placeholder="🔎 Buscar…" value={q} onChange={e=>setQ(e.target.value)}/>
+        <select className={inp} value={fSetor} onChange={e=>setFSetor(e.target.value)}><option value="">Todos os setores</option>{SETORES.map(s=><option key={s}>{s}</option>)}</select>
+        <select className={inp} value={fRota} onChange={e=>setFRota(e.target.value)}><option value="todas">Todas as rotas</option><option value="sem">Sem rota</option>{nums.map(n=><option key={n} value={n}>Rota {n}</option>)}</select></div>
+      <div className="border rounded-md p-2 bg-emerald-50 space-y-2">
+        <div className="flex gap-2 items-center"><span className="text-sm font-semibold">Rota</span><input type="number" min="1" list="rl" className={inp+' w-20'} value={rotaN} onChange={e=>setRotaN(e.target.value)}/><datalist id="rl">{nums.map(n=><option key={n} value={n}/>)}</datalist>
+          <button className={btn+'bg-white border'} title="Próxima rota livre" onClick={()=>setRotaN(String((nums[nums.length-1]||0)+1))}>nova</button>
+          <button className={build?bD:bP} onClick={()=>{if(!build&&rotaN===''){alert('Digite o número da rota.');return}setBuild(!build)}}>{build?'Parar':'Montar rota'}</button></div>
+        {build&&<p className="text-xs text-emerald-900">Clique nos pinos (ou na lista) na ordem de entrega. Clicar de novo remove da rota.</p>}
+        {R!==''&&<div className="text-sm"><b>Rota {R}:</b> {stops.length} famílias | {stops.length} cestas | {sum.c} crianças | {sum.j} jovens
+          {stops.length>max&&<div className="text-red-600 text-xs font-semibold">⚠ Acima do máximo de {max} famílias por rota</div>}
+          <div className="flex gap-2 mt-1"><a className={btn+'bg-blue-600 text-white '+(stops.filter(hasCoord).length?'':'pointer-events-none opacity-40')} href={gm} target="_blank" rel="noreferrer">Abrir trajeto no Google Maps</a>
+            {stops.length>0&&<button className={bS} onClick={()=>confirm(`Limpar a rota ${R}?`)&&upd(fs=>fs.map(x=>x[R26]!==''&&+x[R26]===R?{...x,[R26]:'',[ORD]:''}:x),stops.map(s=>s.ID))}>Limpar</button>}</div></div>}</div>
+      <div className="text-xs text-slate-500">{vis.length} famílias · {vis.filter(f=>!hasCoord(f)).length} sem coordenadas (não aparecem no mapa)</div>
+      <div className="overflow-y-auto flex-1 space-y-1">{vis.map(f=><div key={f.ID} onClick={()=>{if(build)toggle(f);else if(hasCoord(f))map.current.setView([+f[LAT],+f[LON]],17)}} className="flex items-center gap-2 text-sm border rounded px-2 py-1 hover:bg-slate-50 cursor-pointer">
+        <span className="w-6 h-6 rounded-full text-white text-xs flex items-center justify-center shrink-0" style={{background:routeColor(f[R26])}}>{f[ORD]!==''?f[ORD]:''}</span>
+        <div className="min-w-0 flex-1"><div className="truncate font-medium">{f.ID} · {f[NM]}</div><div className="truncate text-xs text-slate-500">{f.Setor} {f.Rua}</div></div>
+        {!hasCoord(f)&&<Badge tone="red">sem coord.</Badge>}</div>)}</div>
+    </div>
+    <div ref={mapEl} className="rounded-lg border z-0 min-h-[400px]"/></div>;
+}
+
+/* ---------- Mensagens ---------- */
+function Mensagens({fams,rd:ref,rotas,setRota,flash}){
+  const nums=[...new Set([...fams.filter(isActive).map(f=>f[R26]).filter(x=>x!==''),...rotas.map(r=>r.Rota)])].sort((a,b)=>a-b);
+  const [n,setN]=useState(nums[0]??'');
+  const stops=n===''?[]:routeStops(fams,n),r=rotas.find(x=>+x.Rota===+n)||{},msg=n===''?'':buildMsg(n,stops,ref);
+  const tel=digits(r['Telefone do voluntário']);
+  const copy=async()=>{try{await navigator.clipboard.writeText(msg)}catch(e){const t=document.createElement('textarea');t.value=msg;document.body.appendChild(t);t.select();document.execCommand('copy');t.remove()}flash('Mensagem copiada!')};
+  return <div className="grid md:grid-cols-[320px_1fr] gap-4">
+    <div className="bg-white border rounded-lg p-4 space-y-3 self-start">
+      <Fld l="Rota"><select className={inp} value={n} onChange={e=>setN(e.target.value)}><option value="">Selecione…</option>{nums.map(x=><option key={x} value={x}>Rota {x}</option>)}</select></Fld>
+      <Fld l="Voluntário / carro"><input className={inp} disabled={n===''} value={r[VOL]||''} onChange={e=>setRota(n,VOL,e.target.value)}/></Fld>
+      <Fld l="Telefone do voluntário"><input className={inp} disabled={n===''} value={maskTel(r['Telefone do voluntário'])} onChange={e=>setRota(n,'Telefone do voluntário',digits(e.target.value).slice(0,11))}/></Fld>
+      <div className="flex gap-2"><button className={bP} disabled={!msg} onClick={copy}>Copiar mensagem</button>
+        <a className={btn+'bg-green-600 text-white '+(msg?'':'pointer-events-none opacity-40')} target="_blank" rel="noreferrer" href={`https://wa.me/${tel.length===11?'55'+tel:''}?text=${encodeURIComponent(msg)}`}>{tel.length===11?'Enviar ao voluntário':'Abrir WhatsApp'}</a></div>
+      {n!==''&&tel.length!==11&&<p className="text-xs text-amber-700">Informe o telefone (11 dígitos) para enviar direto ao voluntário.</p>}
+      {stops.some(f=>!phoneOk(f)||!hasCoord(f)&&!f[LINK])&&<p className="text-xs text-red-600">⚠ Há famílias com telefone inválido ou sem localização nesta rota.</p>}
+      {stops.length>0&&stops.some(f=>deps(f,ref).some(d=>!d.sexo||d.age===null))&&<p className="text-xs text-red-600">⚠ Dependentes sem sexo/nascimento não entram nas listas de meninos/meninas.</p>}</div>
+    <textarea readOnly className="w-full min-h-[420px] md:h-[calc(100vh-190px)] border rounded-lg p-3 font-mono text-sm bg-white" value={msg||'Selecione uma rota com famílias atribuídas.'}/></div>;
+}
+
+/* ---------- App ---------- */
+const str=v=>v==null?'':String(v).trim();
+const SYNC_COLS=COLS.filter(k=>!['ID','Atualizado em','Atualizado por'].includes(k));
+const CMP_COLS=COLS.filter(k=>k!==VOL);
+const nowStr=()=>{const d=new Date(),p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`};
+
+/* ---------- Entregas (acompanhamento ao vivo) ---------- */
+function Entregas({fams,rotas,rd:ref,upd,user,fresh,edit}){
+  const [view,setView]=useState('aberto'),[fR,setFR]=useState('todas'),[q,setQ]=useState('');
+  const base=useMemo(()=>fams.filter(f=>isActive(f)&&f[R26]!==''),[fams]);
+  const cnt={entregue:0,problema:0,aberto:0};base.forEach(f=>cnt[entStatus(f)]++);
+  const total=base.length,pct=total?Math.round(cnt.entregue*100/total):0;
+  const nums=[...new Set(base.map(f=>+f[R26]))].sort((a,b)=>a-b);
+  const list=base.filter(f=>(view==='todas'||entStatus(f)===view)&&(fR==='todas'||+f[R26]===+fR)&&(!q||strip([f.ID,f[NM],f.Rua,f.Setor].join(' ')).includes(strip(q))))
+    .sort((a,b)=>(+a[R26]-+b[R26])||((+a[ORD]||99)-(+b[ORD]||99)));
+  const mark=(f,st,motivo)=>upd(fs=>fs.map(x=>x.ID===f.ID?{...x,'Entregue 2026':st==='entregue'?'Sim':'Não','Motivo da não entrega':st==='problema'?motivo:'','Entregue em':st==='entregue'?nowStr():'','Baixa por':st==='aberto'?'':user}:x),[f.ID]);
+  const feed=fams.filter(f=>f['Atualizado em']).sort((a,b)=>String(b['Atualizado em']).localeCompare(String(a['Atualizado em']))).slice(0,15);
+  const lbl={entregue:'entregue ✔',problema:'problema ✖',aberto:'em aberto'};
+  const Tab=({k,l,n,c})=><button onClick={()=>setView(k)} className={btn+(view===k?'bg-slate-800 text-white':'bg-white border hover:bg-slate-50')}>{l}{n!=null&&<span className={'ml-1 px-1.5 rounded text-xs '+c}>{n}</span>}</button>;
+  return <div className="grid lg:grid-cols-[1fr_300px] gap-4">
+    <div className="space-y-4 min-w-0">
+      <div className="bg-white border rounded-lg p-4"><div className="flex justify-between items-end mb-2"><div><div className="text-xs text-slate-500">Entregas realizadas (famílias ativas com rota)</div><div className="text-3xl font-bold text-emerald-800">{cnt.entregue}<span className="text-slate-400 text-xl"> / {total}</span></div></div><div className="text-right text-sm"><b className="text-red-600">{cnt.problema}</b> com problema · <b className="text-amber-600">{cnt.aberto}</b> em aberto · <b>{pct}%</b></div></div>
+        <div className="h-3 rounded bg-slate-200 overflow-hidden flex"><div className="bg-emerald-600" style={{width:(total?cnt.entregue*100/total:0)+'%'}}/><div className="bg-red-500" style={{width:(total?cnt.problema*100/total:0)+'%'}}/></div></div>
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-2">{nums.map(n=>{const st=base.filter(f=>+f[R26]===n),ok=st.filter(f=>entStatus(f)==='entregue').length,pr=st.filter(f=>entStatus(f)==='problema').length,v=(rotas.find(r=>+r.Rota===n)||{})[VOL];
+        return <button key={n} onClick={()=>setFR(fR===String(n)?'todas':String(n))} className={'text-left bg-white border rounded-md p-2 hover:shadow '+(fR===String(n)?'ring-2 ring-emerald-600':'')}>
+          <div className="flex justify-between text-sm"><b style={{color:routeColor(n)}}>Rota {n}</b><span>{ok}/{st.length}</span></div><div className="text-[11px] text-slate-500 truncate">{v||'sem voluntário'}</div>
+          <div className="h-1.5 mt-1 rounded bg-slate-200 overflow-hidden flex"><div className="bg-emerald-600" style={{width:ok*100/st.length+'%'}}/><div className="bg-red-500" style={{width:pr*100/st.length+'%'}}/></div></button>})}</div>
+      <div className="flex flex-wrap gap-2 items-center">
+        <Tab k="problema" l="⚠ Problemas" n={cnt.problema} c="bg-red-100 text-red-700"/><Tab k="aberto" l="Em aberto" n={cnt.aberto} c="bg-amber-100 text-amber-800"/><Tab k="entregue" l="Entregues" n={cnt.entregue} c="bg-emerald-100 text-emerald-800"/><Tab k="todas" l="Todas"/>
+        <input className={inp+' max-w-xs'} placeholder="🔎 Buscar…" value={q} onChange={e=>setQ(e.target.value)}/>{fR!=='todas'&&<button className={btn+'bg-amber-100'} onClick={()=>setFR('todas')}>Rota {fR} ✕</button>}</div>
+      <div className="space-y-2">{list.map(f=>{const s=entStatus(f),mapa=hasCoord(f)?`https://www.google.com/maps/search/?api=1&query=${f[LAT]},${f[LON]}`:locLink(f);
+        return <div key={f.ID} className={'border rounded-lg p-2 flex flex-wrap items-center gap-2 '+(fresh[f.ID]?'bg-yellow-100':s==='problema'?'bg-red-50':'bg-white')}>
+          <span className="text-white text-xs px-1.5 py-0.5 rounded" style={{background:routeColor(f[R26])}}>R{f[R26]}{f[ORD]!==''?`·${f[ORD]}`:''}</span>
+          <div className="min-w-0 flex-1 basis-56"><div className="font-medium truncate">{f.ID} · {f[NM]}</div><div className="text-xs text-slate-500 truncate">{addr(f)}</div>
+            {s==='problema'&&<div className="text-xs text-red-700 font-semibold">✖ {f['Motivo da não entrega']}{f['Baixa por']?` — ${f['Baixa por']}`:''}</div>}
+            {s==='entregue'&&<div className="text-xs text-emerald-700">✔ {String(f['Entregue em']).slice(11,16)}{f['Baixa por']?` — ${f['Baixa por']}`:''}</div>}</div>
+          {phoneOk(f)&&<a className="text-xs text-green-700 underline" target="_blank" rel="noreferrer" href={`https://wa.me/55${f[T]}`}>WhatsApp</a>}
+          {mapa!=='Não informado'&&<a className="text-xs text-blue-700 underline" target="_blank" rel="noreferrer" href={mapa}>Mapa</a>}
+          <button className="text-xs underline text-slate-600" onClick={()=>edit(f)}>editar</button>
+          {s==='aberto'&&<><button className={btn+'bg-emerald-700 text-white'} onClick={()=>mark(f,'entregue')}>✔ Entregue</button>
+            <select className={inp+' w-40'} value="" onChange={e=>e.target.value&&mark(f,'problema',e.target.value)}><option value="">✖ Problema…</option>{MOTIVOS.map(m=><option key={m}>{m}</option>)}</select></>}
+          {s==='problema'&&<><button className={btn+'bg-emerald-700 text-white'} onClick={()=>mark(f,'entregue')}>✔ Entregue</button><button className={bS} onClick={()=>mark(f,'aberto')}>Voltar p/ aberto</button></>}
+          {s==='entregue'&&<button className={bS} onClick={()=>mark(f,'aberto')}>Desfazer</button>}</div>})}
+        {!list.length&&<div className="text-center text-slate-500 p-6 bg-white border rounded-lg">Nada por aqui. 🎉</div>}</div></div>
+    <aside className="bg-white border rounded-lg p-3 self-start"><h3 className="font-semibold text-sm mb-2">Atividade recente da equipe</h3>
+      {!feed.length&&<p className="text-xs text-slate-500">Aparece aqui quando a planilha estiver conectada e alguém editar.</p>}
+      <ul className="space-y-1.5">{feed.map(f=><li key={f.ID} className="text-xs border-b pb-1"><span className="text-slate-500">{String(f['Atualizado em']).slice(8,10)}/{String(f['Atualizado em']).slice(5,7)} {String(f['Atualizado em']).slice(11,16)}</span> · <b>{f['Atualizado por']||'?'}</b><br/>{f.ID} {f[NM]} <span className="text-slate-500">→ {lbl[entStatus(f)]}</span></li>)}</ul></aside></div>;
+}
+
+function Config({cfg,setCfg,onClose,load,syncNow}){
+  const [c,setC]=useState(cfg);
+  return <div className="fixed inset-0 z-[2000] bg-black/40 flex items-center justify-center p-4"><div className="bg-white rounded-lg p-5 w-full max-w-lg space-y-3 max-h-full overflow-y-auto">
+    <h2 className="font-bold text-lg">Configurações</h2>
+    <Fld l="URL do Web App (Google Apps Script) — vazio = modo offline"><input className={inp} value={c.url} onChange={e=>setC({...c,url:e.target.value.trim()})} placeholder="https://script.google.com/macros/s/…/exec"/></Fld>
+    <div className="grid grid-cols-2 gap-3"><Fld l="Token (igual ao TOKEN do Code.gs)"><input className={inp} value={c.token} onChange={e=>setC({...c,token:e.target.value})}/></Fld>
+      <Fld l="Seu nome (aparece para a equipe)"><input className={inp} value={c.user} onChange={e=>setC({...c,user:e.target.value})}/></Fld>
+      <Fld l="Atualizar a cada (segundos)"><input type="number" min="5" className={inp} value={c.poll} onChange={e=>setC({...c,poll:Math.max(5,+e.target.value||10)})}/></Fld><span/>
+      <Fld l="Data de referência (idade)"><input type="date" className={inp} value={c.ref} onChange={e=>setC({...c,ref:e.target.value})}/></Fld>
+      <Fld l="Máx. famílias por rota"><input type="number" className={inp} value={c.max} onChange={e=>setC({...c,max:+e.target.value||5})}/></Fld></div>
+    <div className="flex flex-wrap gap-2"><button className={bP} onClick={()=>{setCfg(c);onClose()}}>Salvar</button>
+      <button className={bS} onClick={()=>{setCfg(c);load(c)}}>⬇ Carregar da planilha</button><button className={bS} onClick={()=>{setCfg(c);syncNow()}}>🔄 Sincronizar agora</button><button className={bS} onClick={onClose}>Fechar</button></div>
+    <p className="text-xs text-slate-500">Com a URL configurada o app consulta a planilha a cada poucos segundos e envia só os campos que você alterou. Se duas pessoas mudarem o mesmo campo, vale o valor de quem salvou primeiro e você é avisado. Edições feitas direto na planilha aparecem em até 1 minuto. Sem URL, tudo fica só neste navegador.</p></div></div>;
+}
+
+function App(){
+  const [tab,setTab]=useState('painel');
+  const [fams,setFams]=useState(()=>LS('cestas.fams',[]));
+  const [rotas,setRotas]=useState(()=>LS('cestas.rotas',[]));
+  const [cfg,setCfgS]=useState(()=>({url:'',token:'',user:'',poll:10,ref:REF_DEFAULT,max:5,...LS('cestas.cfg',{})}));
+  const [filtro,setFiltro]=useState(null),[q,setQ]=useState(''),[editing,setEditing]=useState(undefined),[showCfg,setShowCfg]=useState(false),[toast,setToast]=useState(''),[sync,setSync]=useState(''),[live,setLive]=useState(null),[fresh,setFresh]=useState({});
+  const fRef=useRef(fams),rRef=useRef(rotas),cRef=useRef(cfg),pend=useRef({ids:new Set(),rotas:new Set()}),timer=useRef(),baseRef=useRef({}),revRef=useRef(null),lastFull=useRef(0),flushing=useRef(false);
+  fRef.current=fams;rRef.current=rotas;cRef.current=cfg;
+  const flash=(m,ms=2500)=>{setToast(m);setTimeout(()=>setToast(''),ms)};
+  const setCfg=c=>{setCfgS(c);cRef.current=c;LSset('cestas.cfg',c)};
+  const volOf=(fs,rs)=>fs.map(f=>{const r=rs.find(x=>f[R26]!==''&&+x.Rota===+f[R26]);return r&&r[VOL]?{...f,[VOL]:r[VOL]}:f});
+  const persist=(fs,rs)=>{LSset('cestas.fams',fs);LSset('cestas.rotas',rs)};
+  function replaceAll(fs,rs){fs=volOf(fs,rs);fRef.current=fs;rRef.current=rs;setFams(fs);setRotas(rs);persist(fs,rs);}
+
+  /* --- envio: só campos alterados + verificação de conflito --- */
+  async function flushQ(){
+    const c=cRef.current;if(!c.url||flushing.current)return;
+    const p=pend.current;if(!p.ids.size&&!p.rotas.size)return;
+    pend.current={ids:new Set(),rotas:new Set()};flushing.current=true;
+    const items=[];
+    p.ids.forEach(id=>{const f=fRef.current.find(x=>x.ID===id);if(!f)return;const raw=baseRef.current[id],set={},bs={};
+      SYNC_COLS.forEach(k=>{if(raw?str(f[k])!==str(raw[k]):str(f[k])!==''){set[k]=f[k];if(raw)bs[k]=raw[k]==null?'':raw[k]}});
+      if(Object.keys(set).length)items.push({ID:id,isNew:!raw,set,base:raw?bs:undefined});});
+    const rs=rRef.current.filter(r=>p.rotas.has(+r.Rota));
+    if(!items.length&&!rs.length){flushing.current=false;return;}
+    setSync('enviando…');
+    try{
+      const r=await api(c,'patch',{user:c.user,items,rotas:rs});if(!r.ok)throw new Error(r.error||'erro');
+      revRef.current=r.rev;let fs=fRef.current;const conf=[];
+      r.results.forEach(res=>{baseRef.current[res.ID]=res.row;const n=normRow(res.row),ck=Object.keys(res.conflicts||{});
+        fs=fs.map(x=>x.ID===res.ID?{...x,'Atualizado em':n['Atualizado em'],'Atualizado por':n['Atualizado por'],...Object.fromEntries(ck.map(k=>[k,n[k]]))}:x);
+        if(ck.length)conf.push(`${res.ID} (${ck.join(', ')})`);});
+      fRef.current=fs;setFams(fs);persist(fs,rRef.current);setSync('✓ salvo');
+      if(conf.length)flash('⚠ Conflito: outra pessoa alterou antes. Mantido o valor da planilha em '+conf.join('; '),9000);
+    }catch(e){
+      setSync('⚠ falha ao salvar, tentando de novo…');p.ids.forEach(i=>pend.current.ids.add(i));p.rotas.forEach(i=>pend.current.rotas.add(i));
+      clearTimeout(timer.current);timer.current=setTimeout(flushQ,5000);flushing.current=false;return;}
+    flushing.current=false;
+    if(pend.current.ids.size||pend.current.rotas.size){clearTimeout(timer.current);timer.current=setTimeout(flushQ,300);}
+  }
+  function queue(ids,rts){(ids||[]).forEach(i=>pend.current.ids.add(i));(rts||[]).forEach(i=>pend.current.rotas.add(+i));if(!cRef.current.url)return;clearTimeout(timer.current);timer.current=setTimeout(flushQ,800);}
+  const upd=(fn,ids)=>{const n=volOf(fn(fRef.current),rRef.current);fRef.current=n;setFams(n);persist(n,rRef.current);queue(ids);};
+  const setRota=(n,k,v)=>{let rs=rRef.current.some(r=>+r.Rota===+n)?rRef.current:[...rRef.current,{Rota:+n,[VOL]:'','Telefone do voluntário':''}];rs=rs.map(r=>+r.Rota===+n?{...r,[k]:v}:r);rRef.current=rs;setRotas(rs);
+    const fs=volOf(fRef.current,rs);fRef.current=fs;setFams(fs);persist(fs,rs);queue([],[n]);};
+
+  /* --- recebimento: traz mudanças dos outros sem pisar no que está pendente aqui --- */
+  async function pull(c){
+    const r=await api(c,'read');if(!r.ok)throw new Error(r.error||'resposta inválida');
+    revRef.current=r.rev;lastFull.current=Date.now();
+    const server=r.cadastro.filter(o=>o.ID);if(!server.length&&fRef.current.length){setLive({t:Date.now(),ok:true});return;}
+    const cur=fRef.current,cm=Object.fromEntries(cur.map(f=>[f.ID,f])),pi=pend.current.ids,out=[],ch=[],sm={};
+    server.forEach(raw=>{sm[raw.ID]=1;const old=cm[raw.ID];
+      if(old&&pi.has(raw.ID)){out.push(old);return;}           // edição local pendente: mantém e preserva a base antiga
+      baseRef.current[raw.ID]=raw;const n=normRow(raw);
+      if(old&&CMP_COLS.every(k=>str(old[k])===str(n[k]))){out.push(old);return;}
+      out.push(n);if(old)ch.push(n);});
+    cur.forEach(f=>{if(!sm[f.ID]&&pi.has(f.ID))out.push(f)});
+    const srs=(r.rotas||[]).map(o=>({Rota:+o.Rota,[VOL]:String(o[VOL]||''),'Telefone do voluntário':digits(o['Telefone do voluntário'])}));
+    const rs=pend.current.rotas.size?rRef.current:[...srs,...rRef.current.filter(l=>!srs.some(s=>s.Rota===l.Rota))];
+    replaceAll(out,rs);
+    if(ch.length){const ids=ch.map(n=>n.ID);setFresh(x=>{const y={...x};ids.forEach(i=>y[i]=1);return y});setTimeout(()=>setFresh(x=>{const y={...x};ids.forEach(i=>delete y[i]);return y}),10000);}
+    const me=(c.user||'').trim(),oth=ch.filter(n=>n['Atualizado por']&&n['Atualizado por']!==me);
+    if(oth.length)flash(`🔔 ${oth.slice(0,3).map(n=>`${n.ID} (${n['Atualizado por']})`).join(', ')}${oth.length>3?` +${oth.length-3}`:''} atualizado(s)`,4000);
+    setLive({t:Date.now(),ok:true});
+  }
+  useEffect(()=>{
+    if(!cfg.url)return;let stop=false,t;
+    const tick=async()=>{if(stop)return;const c=cRef.current;
+      try{if(!flushing.current){const r=await api(c,'rev');if(!r.ok)throw new Error(r.error||'erro');
+        if(r.rev!==revRef.current||Date.now()-lastFull.current>60000)await pull(c);else setLive({t:Date.now(),ok:true});}}
+      catch(e){setLive({t:Date.now(),ok:false})}
+      if(!stop)t=setTimeout(tick,(document.hidden?60:Math.max(5,c.poll||10))*1000);};
+    tick();return()=>{stop=true;clearTimeout(t)};
+  },[cfg.url,cfg.token]);
+  useEffect(()=>{if(cfg.url&&!cfg.user){const u=prompt('Seu nome (aparece para a equipe quando você alterar algo):');if(u&&u.trim())setCfg({...cRef.current,user:u.trim()})}},[]);
+  async function loadSheet(c){setSync('carregando…');try{await pull(c);setSync('✓ carregado da planilha');flash('Dados carregados da planilha');setShowCfg(false);}catch(e){setSync('⚠ '+e.message);alert('Falha ao carregar: '+e.message)}}
+  function syncNow(){fRef.current.forEach(f=>pend.current.ids.add(f.ID));rRef.current.forEach(r=>pend.current.rotas.add(+r.Rota));flushQ();setShowCfg(false);}
+
+  async function importFile(e){
+    const file=e.target.files[0];if(!file)return;e.target.value='';
+    try{const wb=XLSX.read(await file.arrayBuffer(),{cellDates:true});const unk=new Set();
+      const sh=wb.Sheets['Cadastro 2026']||wb.Sheets[wb.SheetNames[0]];
+      const rows=XLSX.utils.sheet_to_json(sh,{defval:''}).filter(o=>o.ID).map(o=>normRow(o,unk));
+      let rs=rRef.current;if(wb.Sheets['Rotas']){rs=XLSX.utils.sheet_to_json(wb.Sheets['Rotas'],{range:1,defval:''}).filter(o=>o.Rota!==''&&!isNaN(+o.Rota)).map(o=>({Rota:+o.Rota,[VOL]:String(o[VOL]||''),'Telefone do voluntário':digits(o['Telefone do voluntário'])}));}
+      if(!rows.length){alert('Não encontrei a aba "Cadastro 2026" com a coluna ID.');return;}
+      if(fRef.current.length&&!confirm(`Importar ${rows.length} famílias e SUBSTITUIR os ${fRef.current.length} cadastros atuais?`))return;
+      replaceAll(rows,rs);flash(`${rows.length} famílias importadas`+(unk.size?` · setores não reconhecidos viraram "Outro": ${[...unk].join(', ')}`:''),5000);
+    }catch(err){alert('Erro ao importar: '+err.message)}
+  }
+  function exportFile(fmt){
+    const fs=volOf(fRef.current,rRef.current),aoa=[COLS,...fs.map(f=>COLS.map(c=>f[c]))];
+    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(aoa),'Cadastro 2026');
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(rRef.current,{header:ROTA_COLS}),'Rotas');
+    if(fmt==='csv'){const blob=new Blob(['\ufeff'+XLSX.utils.sheet_to_csv(wb.Sheets['Cadastro 2026'])],{type:'text/csv'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='Cadastro 2026.csv';a.click();}
+    else XLSX.writeFile(wb,'Cadastro Famílias 2026 (app).xlsx');
+  }
+  function demo(){
+    const m=(id,n,t,l,r,q,lt,lo,rota,o,deps)=>{const f={...blank(id),[NM]:n,[T]:t,[LINK]:l.trim(),Setor:'Ind. Mansões',Rua:r,Quadra:q,Lote:'14A',[LAT]:lt,[LON]:lo,[R26]:rota,[ORD]:o,'Status 2026':'A confirmar','Participa em 2026':'A confirmar'};deps.forEach((d,i)=>{f['Nome '+(i+1)]=d[0];f['Nascimento '+(i+1)]=d[1];f['Sexo '+(i+1)]=d[2]});return f};
+    replaceAll([m('F001','Eulina Oliveira Lopes','62994373748','https://maps.app.goo.gl/2qxsM84Y35Wup7BY9','64','125',-16.7312,-49.2951,16,1,[['Anna Kyara','2018-03-10','F'],['Arthur Junior','2015-06-01','M'],['Pedro Henrique','2019-08-12','M'],['Kenryson Júnior','2011-02-20','M']]),
+      m('F002','Judite Maria da Silva','62994188534','https://maps.app.goo.gl/57ZgrLAyuwXB2Z7T6','64','119',-16.7335,-49.2972,16,2,[]),
+      m('F003','Família Exemplo (sem rota)','6299999',' ','12','30',-16.7401,-49.3011,'','',[['Criança sem sexo','2020-01-15','']])],rRef.current);flash('Dados de exemplo carregados (coordenadas fictícias)');}
+  const goFilter=k=>{setFiltro(k);setQ('');setTab('cadastro')};
+  const edit=f=>setEditing(f||null);
+  function saveFam(f){const isNew=!fRef.current.some(x=>x.ID===f.ID);const old=fRef.current.find(x=>x.ID===f.ID);
+    const rts=[f[R26],old&&old[R26]].filter(n=>n!==''&&n!=null);
+    upd(fs=>{let r=isNew?[...fs,f]:fs.map(x=>x.ID===f.ID?f:x);rts.forEach(n=>{r=renum(r,+n)});return r},[f.ID,...rts.flatMap(n=>routeStops(fRef.current,n).map(s=>s.ID))]);setEditing(undefined);flash('Família salva');}
+  const tabs=[['painel','📊 Painel'],['cadastro','👪 Cadastro'],['mapa','🗺️ Mapa e rotas'],['msg','💬 Mensagem WhatsApp'],['entregas','🚚 Entregas']];
+  const liveTxt=!cfg.url?'💾 modo offline':!live?'⏳ conectando…':live.ok?'🟢 ao vivo · '+new Date(live.t).toLocaleTimeString('pt-BR'):'🔴 sem conexão (tentando…)';
+  return <div className="min-h-screen">
+    <header className="bg-emerald-800 text-white px-4 py-3 flex flex-wrap items-center gap-3">
+      <div className="font-bold">🎄 Cestas de Natal 2026 <span className="font-normal text-emerald-200 text-sm">· Posto Os Mensageiros</span></div>
+      <nav className="flex gap-1 flex-wrap">{tabs.map(([k,l])=><button key={k} onClick={()=>setTab(k)} className={'px-3 py-1.5 rounded-md text-sm '+(tab===k?'bg-white text-emerald-900 font-semibold':'hover:bg-emerald-700')}>{l}</button>)}</nav>
+      <div className="ml-auto flex items-center gap-2 text-sm"><span className="text-emerald-100" title={sync}>{liveTxt}{sync&&cfg.url?' · '+sync:''}</span>
+        <label className="px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600 cursor-pointer">Importar<input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={importFile}/></label>
+        <button className="px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600" onClick={()=>exportFile('xlsx')}>XLSX</button><button className="px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600" onClick={()=>exportFile('csv')}>CSV</button>
+        <button className="px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600" onClick={()=>setShowCfg(true)}>⚙</button></div></header>
+    <main className="p-4 max-w-[1500px] mx-auto">
+      {!fams.length&&tab!=='mapa'?<div className="bg-white border rounded-lg p-8 text-center space-y-3"><p className="text-lg font-semibold">Nenhuma família carregada</p><p className="text-slate-600 text-sm">Importe a planilha <b>Cadastro Famílias 2026</b> (.xlsx/.csv), carregue do Google Sheets em ⚙, ou comece com dados de exemplo.</p>
+        <div className="flex justify-center gap-2"><label className={bP+' cursor-pointer'}>Importar planilha<input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={importFile}/></label><button className={bS} onClick={demo}>Carregar exemplo</button><button className={bS} onClick={()=>edit(null)}>+ Primeira família</button></div></div>
+      :tab==='painel'?<Dashboard fams={fams} rd={cfg.ref} max={cfg.max} goFilter={goFilter}/>
+      :tab==='cadastro'?<Cadastro fams={fams} rd={cfg.ref} max={cfg.max} filtro={filtro} setFiltro={setFiltro} q={q} setQ={setQ} edit={edit} fresh={fresh}/>
+      :tab==='mapa'?<MapTab fams={fams} rd={cfg.ref} max={cfg.max} upd={upd} rotas={rotas}/>
+      :tab==='entregas'?<Entregas fams={fams} rotas={rotas} rd={cfg.ref} upd={upd} user={cfg.user} fresh={fresh} edit={edit}/>
+      :<Mensagens fams={fams} rd={cfg.ref} rotas={rotas} setRota={setRota} flash={flash}/>}
+    </main>
+    {editing!==undefined&&<FamModal key={editing?editing.ID:'new'} init={editing||blank(nextId(fams))} isNew={!editing} onSave={saveFam} onClose={()=>setEditing(undefined)} cfg={cfg} rd={cfg.ref}/>}
+    {showCfg&&<Config cfg={cfg} setCfg={setCfg} onClose={()=>setShowCfg(false)} load={loadSheet} syncNow={syncNow}/>}
+    {toast&&<div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-4 py-2 rounded-md text-sm z-[3000] max-w-[90vw]">{toast}</div>}
+  </div>;
+}
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+
+</script>
+</body></html>
