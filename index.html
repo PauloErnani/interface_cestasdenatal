@@ -29,10 +29,11 @@ const DEPC=[];for(let i=1;i<=9;i++)DEPC.push('Nome '+i,'Nascimento '+i,'Sexo '+i
 const COLS=[...BASE,...DEPC];
 const ROTA_COLS=['Rota','Voluntário / carro','Telefone do voluntário'];
 const strip=s=>String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
-function normSetor(s){const k=strip(s);if(!k)return '';
+function normSetor(s){const raw=String(s||'').trim(),k=strip(raw);if(!k)return '';
+ if(/^outro\s*:/i.test(raw))return 'Outro: '+raw.replace(/^outro\s*:/i,'').trim();if(k==='outro')return 'Outro';
  const R=[[/independencia|mansoes/,'Ind. Mansões'],[/tiradentes/,'Jardim Tiradentes'],[/haiala|hayala/,'Parque Hayala'],[/nova cidade/,'Nova Cidade'],[/florenca/,'Jardim Florença'],[/chacara/,'Chácara São Pedro'],[/colina/,'Colina Azul'],[/dom bosco/,'Jardim Dom Bosco'],[/rosa do sul/,'Jardim Rosa do Sul'],[/nacoes/,'Parque das Nações'],[/boa vista/,'Alto da Boa Vista'],[/riviera/,'Jardim Riviera']];
  if(/^ind /.test(k))return 'Ind. Mansões';
- for(const [r,v] of R)if(r.test(k))return v;return 'Outro';}
+ for(const [r,v] of R)if(r.test(k))return v;return 'Outro: '+raw;}
 const validDate=s=>/^\d{4}-\d{2}-\d{2}$/.test(s||'');
 function ageOn(b,ref){const[y,m,d]=b.split('-').map(Number),[ry,rm,rd]=ref.split('-').map(Number);let a=ry-y;if(rm<m||(rm===m&&rd<d))a--;return a;}
 const faixaOf=a=>a<=2?'0-2':a<=5?'3-5':a<=9?'6-9':a<=12?'10-12':a<=17?'13-17':'18+';
@@ -56,7 +57,7 @@ const routeColor=n=>n===''||n==null?'#6b7280':`hsl(${(n*137.508)%360} 72% 40%)`;
 function addr(f){const p=[],r=String(f.Rua||'').trim();
  if(r)p.push(/^(rua|avenida|av\.?|alameda|travessa|rodovia|estrada|pra[cç]a|via)\b/i.test(r)?r:'Rua '+r);
  if(String(f.Quadra||'').trim())p.push('Quadra '+String(f.Quadra).trim());if(String(f.Lote||'').trim())p.push('Lote '+String(f.Lote).trim());
- let s=p.join(', ');if(f.Setor)s+=(s?' – ':'')+f.Setor;if(String(f['Complemento / referência']||'').trim())s+=` (${String(f['Complemento / referência']).trim()})`;return s||'Não informado';}
+ let s=p.join(', ');if(f.Setor)s+=(s?' – ':'')+setorTxt(f.Setor);if(String(f['Complemento / referência']||'').trim())s+=` (${String(f['Complemento / referência']).trim()})`;return s||'Não informado';}
 const locLink=f=>String(f[LINK]||'').trim()||(hasCoord(f)?`https://maps.google.com/?q=${f[LAT]},${f[LON]}`:'Não informado');
 function buildMsg(n,stops,ref){const L=[`🚐 ROTA ${n}`];
  stops.forEach((f,i)=>{const s=stats(f,ref),g=a=>a.length?` (${a.join(' / ')})`:'';
@@ -77,11 +78,18 @@ function normRow(o,unk){const f={};COLS.forEach(c=>{let v=o[c];if(v==null)v='';i
  [LAT,LON].forEach(k=>{const n=parseFloat(String(f[k]).replace(',','.'));f[k]=isNaN(n)?'':n;});
  [R26,ORD,'Rota 2025'].forEach(k=>{const n=parseInt(f[k]);f[k]=isNaN(n)?'':n;});
  ['Quadra','Lote','Rua'].forEach(k=>f[k]=String(f[k]));
- const s=normSetor(f.Setor);if(s==='Outro'&&f.Setor&&unk)unk.add(f.Setor);f.Setor=s;
+ const s=normSetor(f.Setor);if(s.startsWith('Outro: ')&&!/^outro/i.test(String(f.Setor))&&unk)unk.add(f.Setor);f.Setor=s;
  f['Status 2026']=f['Status 2026']||'A confirmar';f['Participa em 2026']=f['Participa em 2026']||'A confirmar';f.Prioridade=f.Prioridade||'Normal';f['Confirmação WhatsApp']=f['Confirmação WhatsApp']||'Não contatada';
  return f;}
 
 const entStatus=f=>f['Entregue 2026']==='Sim'?'entregue':(f['Entregue 2026']==='Não'&&f['Motivo da não entrega'])?'problema':'aberto';
+const tmpId=()=>'TMP-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+const isTmp=id=>String(id).startsWith('TMP-');
+const idLabel=id=>isTmp(id)?'novo':id;
+
+
+const OUT='Outro',isOut=v=>String(v||'')===OUT||String(v||'').startsWith('Outro: ');
+const setorTxt=s=>String(s||'').startsWith('Outro: ')?(String(s).slice(7).trim()||'Outro'):s;
 
 </script>
 <script type="text/babel">
@@ -103,7 +111,9 @@ const inp='w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm focus:o
 const btn='px-3 py-1.5 rounded-md text-sm font-medium transition ';
 const bP=btn+'bg-emerald-700 text-white hover:bg-emerald-800',bS=btn+'bg-white border border-slate-300 hover:bg-slate-50',bD=btn+'bg-red-600 text-white hover:bg-red-700';
 const Fld=({l,children,c=''})=><label className={'block '+c}><span className="block text-xs font-medium text-slate-600 mb-0.5">{l}</span>{children}</label>;
-const Sel=({v,o,on,blankOpt})=><select className={inp} value={v} onChange={e=>on(e.target.value)}>{blankOpt&&<option value="">—</option>}{o.map(x=><option key={x}>{x}</option>)}</select>;
+const Sel=({v,o,on,blankOpt})=>{const out=o.includes(OUT)&&isOut(v),custom=out?String(v).slice(7):'';
+  return <><select className={inp} value={out?OUT:v} onChange={e=>on(e.target.value)}>{blankOpt&&<option value="">—</option>}{o.map(x=><option key={x}>{x}</option>)}</select>
+    {out&&<input className={inp+' mt-1'} autoFocus placeholder="Digite qual é o “Outro”…" value={custom} onChange={e=>on(e.target.value?'Outro: '+e.target.value:OUT)}/>}</>;};
 const Badge=({children,tone='slate'})=>{const t={slate:'bg-slate-100 text-slate-700',red:'bg-red-100 text-red-700',amber:'bg-amber-100 text-amber-800',green:'bg-emerald-100 text-emerald-800'}[tone];return <span className={'inline-block text-[11px] px-1.5 py-0.5 rounded '+t}>{children}</span>};
 const aTone=a=>a==='Membro acima de 17'?'amber':'red';
 
@@ -138,7 +148,7 @@ function FamModal({init,isNew,onSave,onClose,cfg,rd:ref}){
   }
   return <div className="fixed inset-0 z-[2000] bg-black/40 flex justify-end" onMouseDown={e=>e.target===e.currentTarget&&onClose()}>
     <div className="bg-white w-full max-w-2xl h-full overflow-y-auto p-5 shadow-xl">
-      <div className="flex justify-between items-center mb-4"><h2 className="text-lg font-bold">{isNew?'Nova família':`Editar ${d.ID}`}</h2><button className={bS} onClick={onClose}>Fechar</button></div>
+      <div className="flex justify-between items-center mb-4"><h2 className="text-lg font-bold">{isNew?'Nova família (o ID é definido ao salvar)':`Editar ${idLabel(d.ID)}`}</h2><button className={bS} onClick={onClose}>Fechar</button></div>
       <h3 className="font-semibold text-sm text-emerald-800 mb-2">Responsável e contato</h3>
       <div className="grid grid-cols-2 gap-3 mb-4">
         <Fld l="Nome do responsável *" c="col-span-2"><input className={inp} value={d[NM]} onChange={e=>s(NM,e.target.value)}/></Fld>
@@ -230,8 +240,8 @@ function Cadastro({fams,rd:ref,max,filtro,setFiltro,q,setQ,edit,fresh}){
     <div className="bg-white rounded-lg border overflow-x-auto"><table className="w-full text-sm">
       <thead className="bg-slate-100 text-left text-xs text-slate-600"><tr>{['ID','Responsável','Setor / endereço','Telefone','Status','Rota','Cr./Jov.','Alertas'].map(h=><th key={h} className="px-3 py-2">{h}</th>)}</tr></thead>
       <tbody>{rows.map(f=>{const s=stats(f,ref),al=alerts(f,ref,max,cnt);return <tr key={f.ID} onClick={()=>edit(f)} className={"border-t hover:bg-emerald-50 cursor-pointer"+(fresh[f.ID]?" bg-yellow-100":"")}>
-        <td className="px-3 py-2 font-mono text-xs">{f.ID}</td><td className="px-3 py-2 font-medium">{f[NM]}</td>
-        <td className="px-3 py-2 text-xs">{f.Setor}<br/><span className="text-slate-500">{[f.Rua,f.Quadra&&'Q '+f.Quadra,f.Lote&&'L '+f.Lote].filter(Boolean).join(', ')}</span></td>
+        <td className="px-3 py-2 font-mono text-xs">{idLabel(f.ID)}</td><td className="px-3 py-2 font-medium">{f[NM]}</td>
+        <td className="px-3 py-2 text-xs">{setorTxt(f.Setor)}<br/><span className="text-slate-500">{[f.Rua,f.Quadra&&'Q '+f.Quadra,f.Lote&&'L '+f.Lote].filter(Boolean).join(', ')}</span></td>
         <td className="px-3 py-2 text-xs">{f[T]?maskTel(f[T]):'—'}</td><td className="px-3 py-2 text-xs">{f['Status 2026']}</td>
         <td className="px-3 py-2">{f[R26]!==''?<span className="text-white text-xs px-1.5 py-0.5 rounded" style={{background:routeColor(f[R26])}}>{f[R26]}{f[ORD]!==''?`·${f[ORD]}`:''}</span>:<span className="text-slate-400">—</span>}</td>
         <td className="px-3 py-2 text-xs">{s.criancas} / {s.jovens}</td>
@@ -244,7 +254,7 @@ function MapTab({fams,rd:ref,max,upd,rotas}){
   const [q,setQ]=useState(''),[fRota,setFRota]=useState('todas'),[fSetor,setFSetor]=useState(''),[build,setBuild]=useState(false),[rotaN,setRotaN]=useState('');
   const mapEl=useRef(),map=useRef(),layer=useRef(),fitted=useRef(false),tog=useRef();
   const act=useMemo(()=>fams.filter(isActive),[fams]);
-  const vis=useMemo(()=>{const t=strip(q);return act.filter(f=>(!fSetor||f.Setor===fSetor)&&(fRota==='todas'||(fRota==='sem'?f[R26]==='':+f[R26]===+fRota))&&(!t||strip([f.ID,f[NM],f.Rua,f.Setor].join(' ')).includes(t)))},[act,q,fRota,fSetor]);
+  const vis=useMemo(()=>{const t=strip(q);return act.filter(f=>(!fSetor||f.Setor===fSetor||(fSetor===OUT&&isOut(f.Setor)))&&(fRota==='todas'||(fRota==='sem'?f[R26]==='':+f[R26]===+fRota))&&(!t||strip([f.ID,f[NM],f.Rua,f.Setor].join(' ')).includes(t)))},[act,q,fRota,fSetor]);
   const R=rotaN!==''?+rotaN:(fRota!=='todas'&&fRota!=='sem'?+fRota:'');
   const stops=R!==''?routeStops(fams,R):[];
   const sum=stops.reduce((a,f)=>{const s=stats(f,ref);a.c+=s.criancas;a.j+=s.jovens;return a},{c:0,j:0});
@@ -289,7 +299,7 @@ function MapTab({fams,rd:ref,max,upd,rotas}){
       <div className="text-xs text-slate-500">{vis.length} famílias · {vis.filter(f=>!hasCoord(f)).length} sem coordenadas (não aparecem no mapa)</div>
       <div className="overflow-y-auto flex-1 space-y-1">{vis.map(f=><div key={f.ID} onClick={()=>{if(build)toggle(f);else if(hasCoord(f))map.current.setView([+f[LAT],+f[LON]],17)}} className="flex items-center gap-2 text-sm border rounded px-2 py-1 hover:bg-slate-50 cursor-pointer">
         <span className="w-6 h-6 rounded-full text-white text-xs flex items-center justify-center shrink-0" style={{background:routeColor(f[R26])}}>{f[ORD]!==''?f[ORD]:''}</span>
-        <div className="min-w-0 flex-1"><div className="truncate font-medium">{f.ID} · {f[NM]}</div><div className="truncate text-xs text-slate-500">{f.Setor} {f.Rua}</div></div>
+        <div className="min-w-0 flex-1"><div className="truncate font-medium">{idLabel(f.ID)} · {f[NM]}</div><div className="truncate text-xs text-slate-500">{setorTxt(f.Setor)} {f.Rua}</div></div>
         {!hasCoord(f)&&<Badge tone="red">sem coord.</Badge>}</div>)}</div>
     </div>
     <div ref={mapEl} className="rounded-lg border z-0 min-h-[400px]"/></div>;
@@ -348,14 +358,14 @@ function Entregas({fams,rotas,rd:ref,upd,user,fresh,edit}){
       <div className="space-y-2">{list.map(f=>{const s=entStatus(f),mapa=hasCoord(f)?`https://www.google.com/maps/search/?api=1&query=${f[LAT]},${f[LON]}`:locLink(f);
         return <div key={f.ID} className={'border rounded-lg p-2 flex flex-wrap items-center gap-2 '+(fresh[f.ID]?'bg-yellow-100':s==='problema'?'bg-red-50':'bg-white')}>
           <span className="text-white text-xs px-1.5 py-0.5 rounded" style={{background:routeColor(f[R26])}}>R{f[R26]}{f[ORD]!==''?`·${f[ORD]}`:''}</span>
-          <div className="min-w-0 flex-1 basis-56"><div className="font-medium truncate">{f.ID} · {f[NM]}</div><div className="text-xs text-slate-500 truncate">{addr(f)}</div>
+          <div className="min-w-0 flex-1 basis-56"><div className="font-medium truncate">{idLabel(f.ID)} · {f[NM]}</div><div className="text-xs text-slate-500 truncate">{addr(f)}</div>
             {s==='problema'&&<div className="text-xs text-red-700 font-semibold">✖ {f['Motivo da não entrega']}{f['Baixa por']?` — ${f['Baixa por']}`:''}</div>}
             {s==='entregue'&&<div className="text-xs text-emerald-700">✔ {String(f['Entregue em']).slice(11,16)}{f['Baixa por']?` — ${f['Baixa por']}`:''}</div>}</div>
           {phoneOk(f)&&<a className="text-xs text-green-700 underline" target="_blank" rel="noreferrer" href={`https://wa.me/55${f[T]}`}>WhatsApp</a>}
           {mapa!=='Não informado'&&<a className="text-xs text-blue-700 underline" target="_blank" rel="noreferrer" href={mapa}>Mapa</a>}
           <button className="text-xs underline text-slate-600" onClick={()=>edit(f)}>editar</button>
           {s==='aberto'&&<><button className={btn+'bg-emerald-700 text-white'} onClick={()=>mark(f,'entregue')}>✔ Entregue</button>
-            <select className={inp+' w-40'} value="" onChange={e=>e.target.value&&mark(f,'problema',e.target.value)}><option value="">✖ Problema…</option>{MOTIVOS.map(m=><option key={m}>{m}</option>)}</select></>}
+            <select className={inp+' w-40'} value="" onChange={e=>{const v=e.target.value;if(!v)return;if(v===OUT){const t=prompt('Qual foi o motivo?');if(t===null)return;mark(f,'problema',t.trim()?'Outro: '+t.trim():OUT)}else mark(f,'problema',v)}}><option value="">✖ Problema…</option>{MOTIVOS.map(m=><option key={m}>{m}</option>)}</select></>}
           {s==='problema'&&<><button className={btn+'bg-emerald-700 text-white'} onClick={()=>mark(f,'entregue')}>✔ Entregue</button><button className={bS} onClick={()=>mark(f,'aberto')}>Voltar p/ aberto</button></>}
           {s==='entregue'&&<button className={bS} onClick={()=>mark(f,'aberto')}>Desfazer</button>}</div>})}
         {!list.length&&<div className="text-center text-slate-500 p-6 bg-white border rounded-lg">Nada por aqui. 🎉</div>}</div></div>
@@ -408,7 +418,9 @@ function App(){
     try{
       const r=await api(c,'patch',{user:c.user,items,rotas:rs});if(!r.ok)throw new Error(r.error||'erro');
       revRef.current=r.rev;let fs=fRef.current;const conf=[];
-      r.results.forEach(res=>{baseRef.current[res.ID]=res.row;const n=normRow(res.row),ck=Object.keys(res.conflicts||{});
+      r.results.forEach(res=>{
+        if(res.tmpId&&res.tmpId!==res.ID){fs=fs.map(x=>x.ID===res.tmpId?{...x,ID:res.ID}:x);delete baseRef.current[res.tmpId];if(pend.current.ids.has(res.tmpId)){pend.current.ids.delete(res.tmpId);pend.current.ids.add(res.ID)}}
+        baseRef.current[res.ID]=res.row;const n=normRow(res.row),ck=Object.keys(res.conflicts||{});
         fs=fs.map(x=>x.ID===res.ID?{...x,'Atualizado em':n['Atualizado em'],'Atualizado por':n['Atualizado por'],...Object.fromEntries(ck.map(k=>[k,n[k]]))}:x);
         if(ck.length)conf.push(`${res.ID} (${ck.join(', ')})`);});
       fRef.current=fs;setFams(fs);persist(fs,rRef.current);setSync('✓ salvo');
@@ -435,7 +447,7 @@ function App(){
       baseRef.current[raw.ID]=raw;const n=normRow(raw);
       if(old&&CMP_COLS.every(k=>str(old[k])===str(n[k]))){out.push(old);return;}
       out.push(n);if(old)ch.push(n);});
-    cur.forEach(f=>{if(!sm[f.ID]&&pi.has(f.ID))out.push(f)});
+    cur.forEach(f=>{if(!sm[f.ID]&&(pi.has(f.ID)||isTmp(f.ID))){out.push(f);if(isTmp(f.ID))pi.add(f.ID)}});
     const srs=(r.rotas||[]).map(o=>({Rota:+o.Rota,[VOL]:String(o[VOL]||''),'Telefone do voluntário':digits(o['Telefone do voluntário'])}));
     const rs=pend.current.rotas.size?rRef.current:[...srs,...rRef.current.filter(l=>!srs.some(s=>s.Rota===l.Rota))];
     replaceAll(out,rs);
@@ -443,6 +455,7 @@ function App(){
     const me=(c.user||'').trim(),oth=ch.filter(n=>n['Atualizado por']&&n['Atualizado por']!==me);
     if(oth.length)flash(`🔔 ${oth.slice(0,3).map(n=>`${n.ID} (${n['Atualizado por']})`).join(', ')}${oth.length>3?` +${oth.length-3}`:''} atualizado(s)`,4000);
     setLive({t:Date.now(),ok:true});
+    if(pend.current.ids.size){clearTimeout(timer.current);timer.current=setTimeout(flushQ,800);}
   }
   useEffect(()=>{
     if(!cfg.url)return;let stop=false,t;
@@ -465,7 +478,7 @@ function App(){
       let rs=rRef.current;if(wb.Sheets['Rotas']){rs=XLSX.utils.sheet_to_json(wb.Sheets['Rotas'],{range:1,defval:''}).filter(o=>o.Rota!==''&&!isNaN(+o.Rota)).map(o=>({Rota:+o.Rota,[VOL]:String(o[VOL]||''),'Telefone do voluntário':digits(o['Telefone do voluntário'])}));}
       if(!rows.length){alert('Não encontrei a aba "Cadastro 2026" com a coluna ID.');return;}
       if(fRef.current.length&&!confirm(`Importar ${rows.length} famílias e SUBSTITUIR os ${fRef.current.length} cadastros atuais?`))return;
-      replaceAll(rows,rs);flash(`${rows.length} famílias importadas`+(unk.size?` · setores não reconhecidos viraram "Outro": ${[...unk].join(', ')}`:''),5000);
+      replaceAll(rows,rs);flash(`${rows.length} famílias importadas`+(unk.size?` · setores não reconhecidos ficaram como "Outro: …": ${[...unk].join(', ')}`:''),5000);
     }catch(err){alert('Erro ao importar: '+err.message)}
   }
   function exportFile(fmt){
@@ -482,7 +495,7 @@ function App(){
       m('F003','Família Exemplo (sem rota)','6299999',' ','12','30',-16.7401,-49.3011,'','',[['Criança sem sexo','2020-01-15','']])],rRef.current);flash('Dados de exemplo carregados (coordenadas fictícias)');}
   const goFilter=k=>{setFiltro(k);setQ('');setTab('cadastro')};
   const edit=f=>setEditing(f||null);
-  function saveFam(f){const isNew=!fRef.current.some(x=>x.ID===f.ID);const old=fRef.current.find(x=>x.ID===f.ID);
+  function saveFam(f){const isNew=!fRef.current.some(x=>x.ID===f.ID);if(isNew&&!cRef.current.url)f={...f,ID:nextId(fRef.current)};const old=fRef.current.find(x=>x.ID===f.ID);
     const rts=[f[R26],old&&old[R26]].filter(n=>n!==''&&n!=null);
     upd(fs=>{let r=isNew?[...fs,f]:fs.map(x=>x.ID===f.ID?f:x);rts.forEach(n=>{r=renum(r,+n)});return r},[f.ID,...rts.flatMap(n=>routeStops(fRef.current,n).map(s=>s.ID))]);setEditing(undefined);flash('Família salva');}
   const tabs=[['painel','📊 Painel'],['cadastro','👪 Cadastro'],['mapa','🗺️ Mapa e rotas'],['msg','💬 Mensagem WhatsApp'],['entregas','🚚 Entregas']];
@@ -504,7 +517,7 @@ function App(){
       :tab==='entregas'?<Entregas fams={fams} rotas={rotas} rd={cfg.ref} upd={upd} user={cfg.user} fresh={fresh} edit={edit}/>
       :<Mensagens fams={fams} rd={cfg.ref} rotas={rotas} setRota={setRota} flash={flash}/>}
     </main>
-    {editing!==undefined&&<FamModal key={editing?editing.ID:'new'} init={editing||blank(nextId(fams))} isNew={!editing} onSave={saveFam} onClose={()=>setEditing(undefined)} cfg={cfg} rd={cfg.ref}/>}
+    {editing!==undefined&&<FamModal key={editing?editing.ID:'new'} init={editing||blank(tmpId())} isNew={!editing} onSave={saveFam} onClose={()=>setEditing(undefined)} cfg={cfg} rd={cfg.ref}/>}
     {showCfg&&<Config cfg={cfg} setCfg={setCfg} onClose={()=>setShowCfg(false)} load={loadSheet} syncNow={syncNow}/>}
     {toast&&<div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-4 py-2 rounded-md text-sm z-[3000] max-w-[90vw]">{toast}</div>}
   </div>;
