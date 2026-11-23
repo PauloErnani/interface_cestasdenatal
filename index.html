@@ -61,7 +61,12 @@ function addr(f){const p=[],r=String(f.Rua||'').trim();
 const locLink=f=>String(f[LINK]||'').trim()||(hasCoord(f)?`https://maps.google.com/?q=${f[LAT]},${f[LON]}`:'Não informado');
 function buildMsg(n,stops,ref){const L=[`🚐 ROTA ${n}`];
  stops.forEach((f,i)=>{const s=stats(f,ref),g=a=>a.length?` (${a.join(' / ')})`:'';
-  L.push(`📍 Família ${i+1}`,`Nome: ${f[NM]}`,`Localização: ${locLink(f)}`,`Endereço: ${addr(f)}`,`Nº de Crianças: ${s.criancas}`,`Nº de Jovens: ${s.jovens}`,`Nº de Meninas (F): ${s.F.length}${g(s.F)}`,`Nº de Meninos (M): ${s.M.length}${g(s.M)}`,`Telefone: ${f[T]||'Não informado'}`,'');});
+  L.push(`📍 Família ${i+1}`,`Nome: ${f[NM]}`,`Localização: ${locLink(f)}`,`Endereço: ${addr(f)}`);
+  if(s.criancas)L.push(`Nº de Crianças: ${s.criancas}`);
+  if(s.jovens)L.push(`Nº de Jovens: ${s.jovens}`);
+  if(s.F.length)L.push(`Nº de Meninas (F): ${s.F.length}${g(s.F)}`);
+  if(s.M.length)L.push(`Nº de Meninos (M): ${s.M.length}${g(s.M)}`);
+  L.push(`Telefone: ${f[T]||'Não informado'}`,'');});
  return L.join('\n').trim();}
 const isUrl=t=>/^https?:\/\//i.test((t||'').trim());
 const isShort=t=>/maps\.app\.goo\.gl|goo\.gl\/maps/i.test(t||'');
